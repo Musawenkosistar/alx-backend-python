@@ -1,8 +1,14 @@
-from django.contrib import admin
+# chats/urls.py
 from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import ConversationViewSet, MessageViewSet
 
+# Create a router and register our viewsets
+router = DefaultRouter()
+router.register(r'conversations', ConversationViewSet, basename='conversation')
+router.register(r'messages', MessageViewSet, basename='message')
+
+# Include the router URLs
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('api/', include('chats.urls')),           # your API routes
-    path('api-auth/', include('rest_framework.urls')),  # DRF login/logout
+    path('', include(router.urls)),
 ]
