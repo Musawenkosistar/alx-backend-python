@@ -1,97 +1,72 @@
-from django.contrib.auth.decorators import login_required
-from django.db.models import Q
-from django.shortcuts import render
-from django.views.decorators.cache import cache_page
-from rest_framework import viewsets, status
-from rest_framework.generics import get_object_or_404
+from rest_framework import viewsets, filters, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from .models import Conversation, Message
-from .serializers import ConversationSerializer, MessageSerializer
-from django.contrib.auth import get_user_model
-from .permissions import IsParticipantOfConversation
+from rest_framework.decorators import action
+from django.shortcuts import get_object_or_404
 
-User = get_user_model()
+from .models import Conversation, Message, User
+from .serializers import ConversationSerializer, MessageSerializer
+
 
 class ConversationViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for listing, creating, and retrieving conversations.
+    Supports filtering and ordering.
+    """
     queryset = Conversation.objects.all()
     serializer_class = ConversationSerializer
-    permission_classes = [IsAuthenticated, IsParticipantOfConversation]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['participants__first_name', 'participants__last_name']
+    ordering_fields = ['created_at']
 
-    def get_queryset(self):
-        return self.queryset.filter(participants=self.request.user)
-    
-    def create(self, request, *args, **kwargs):
-        user_ids = request.data.get('participants', [])
-        if not user_ids:
-            return Response({"detail": "At least one participant is required."},
-                            status=status.HTTP_400_BAD_REQUEST)
-        participant_ids = list(set(user_ids + [request.user.user_id]))
-        try:
-            participants = User.objects.filter(user_id__in=participant_ids)
-        except User.DoesNotExist:
-            return Response({"detail": "Invalid user IDs provided."},
-                          status=status.HTTP_400_BAD_REQUEST)
+    @action(detail=False, methods=['post'])
+    def create_conversation(self, request):
+        """
+        Custom action to create a conversation with multiple participants.
+        Expects a list of user_ids in the request data.
+        """
+        participants_ids = request.data.get('participants', [])
+        if not participants_ids or len(participants_ids) < 2:
+            return Response(
+                {"error": "At least two participants are required to create a conversation."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        participants = User.objects.filter(id__in=participants_ids)
         conversation = Conversation.objects.create()
-        conversation.participants.set(User.objects.filter(id__in=participant_ids))
+        conversation.participants.set(participants)
         conversation.save()
 
         serializer = self.get_serializer(conversation)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
 
 class MessageViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for listing, creating, and retrieving messages.
+    Supports filtering and ordering.
+    """
     queryset = Message.objects.all()
     serializer_class = MessageSerializer
-    permission_classes = [IsAuthenticated, IsParticipantOfConversation]
-
-    def get_queryset(self):
-        """Return messages from conversations the user is part of."""
-        queryset = Message.objects.filter(conversation__participants=self.request.user)
-        conversation_id = self.kwargs.get('conversation_conversation_id') or self.request.query_params.get('conversation')
-        if conversation_id:
-            queryset = queryset.filter(conversation__conversation_id=conversation_id)
-        return queryset
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['message_body']
+    ordering_fields = ['sent_at']
 
     def create(self, request, *args, **kwargs):
-        data = request.data.copy()
-        data['sender'] = request.user.id
+        """
+        Override create to ensure message is linked to conversation and sender.
+        Expects 'conversation' and 'sender' IDs in the request data.
+        """
+        conversation_id = request.data.get('conversation')
+        sender_id = request.data.get('sender')
 
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
+        conversation = get_object_or_404(Conversation, id=conversation_id)
+        sender = get_object_or_404(User, id=sender_id)
 
+        message = Message.objects.create(
+            conversation=conversation,
+            sender=sender,
+            message_body=request.data.get('message_body', '')
+        )
+
+        serializer = self.get_serializer(message)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    def update(self, request, *args, **kwargs):
-        instance = self.get_object()
-        if not Message.objects.filter(
-            id=instance.id,
-            conversation__participants=self.request.user
-        ).exists():
-            return Response(
-                {"detail": "You are not authorized to update this message"},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        return super().update(request, *args, **kwargs)
-
-
-@cache_page(60)
-@login_required
-def conversation_view(request, user_id):
-    """
-    Cached view that displays conversation between two users
-    Cache timeout is set to 60 seconds
-    """
-    other_user = get_object_or_404(User, pk=user_id)
-
-    messages = Message.objects.filter(
-        Q(sender=request.user, receiver=other_user) |
-        Q(sender=other_user, receiver=request.user)
-    ).select_related('sender', 'receiver').order_by('timestamp')
-
-    return render(request, 'messaging/conversation.html', {
-        'other_user': other_user,
-        'messages': messages
-    })
