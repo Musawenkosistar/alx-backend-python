@@ -1,0 +1,49 @@
+pipeline {
+    agent any
+
+    tools {
+        python 'Python3'
+    }
+
+    environment {
+        VENV = 'venv'
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                git credentialsId: 'github-creds',
+                    url: 'https://github.com/Musawenkosistar/messaging-app.git',
+                    branch: 'main'
+            }
+        }
+
+        stage('Set Up Virtual Environment') {
+            steps {
+                sh '''
+                python3 -m venv venv
+                . venv/bin/activate
+                pip install --upgrade pip
+                pip install -r requirements.txt
+                '''
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh '''
+                . venv/bin/activate
+                pytest --junitxml=report.xml
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit 'report.xml'
+        }
+    }
+}
+
